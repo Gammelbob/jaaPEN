@@ -25,7 +25,8 @@
 # jaaPEN - 2011 by Gammelbob
 #
 # Changelog:
-# 0.0.2 - basic crawling and blacklisting
+# 0.0.3 - added GET detection
+# 0.0.2 - added basic crawling and blacklisting
 # 0.0.1 - initial commit
 ############################################
 
@@ -34,53 +35,72 @@ import re
 import urllib2
 import urlparse
 
+version = '0.0.3'
+
 try:
+    if sys.argv[1] == 'version' or sys.argv[1] == '-version' or sys.argv[1] == '--version':
+        print 'jaaPEN version %s' % version
+        exit()
     tocrawl = set([sys.argv[1]])
 except:
-    print 'first parameter has to be your URL like http://localhost'
+    print 'Usage: jaaPEN http://localhost [show|save] [file]'
     exit()
 try:
     if sys.argv[2] == 'show':
         showResults = True
-    else:
+    elif sys.argv[2] == 'save':
         showResults = False
+        #2do: if iswritable(sys.argv[3]): set showResults = False, set saveResults = True
 except:
-    showResults = False
+    showResults = True
+    saveResults = False
 
 crawled = set([])
 blacklist = set([])
 external = set([])
 baselinks = set([])
 dynlinks = set([])
+getKeys = set([])
+getValues = set([])
+getParameter =set([]) 
 linkregex = re.compile('<a\s*href=[\'|"](.*?)[\'"].*?>')
 filterExternal = True
-
+jobtime = ''
 while True:
     try:
         crawling = tocrawl.pop()
     except KeyError:
         if showResults:
-            print 'Blacklist:'
+            print '\nBlacklist:'
             for value in blacklist:
                 print value
-            print 'external:'
+            print '\nexternal:'
             for value in external:
                 print value
-            print 'baselinks:'
+            print '\nbaselinks:'
             for value in baselinks:
                 print value
-            print 'dynlinks:'
-            for value in dynlinks:
+            print '\nget-parameter:'
+            for value in getParameter:
                 print value
+            print '\nget-keys:'
+            for value in getKeys:
+                print value
+            #print 'dynlinks:'
+            #for value in dynlinks:
+            #    print value
             #print 'crawled:'
             #for value in crawled:
             #    print value
         print '==========================================='
-        print ' crawled pages: %s' % len(crawled)
-        print ' links in backlist: %s' % len(blacklist)
-        print ' found baselinks: %s' % len(baselinks)
+        print ' crawled pages: %s%s' % (len(crawled), ' in'.join(jobtime))
+        print ' links in blacklist: %s' % len(blacklist)
         print ' found external links: %s' % len(external)
+        print ' found baselinks: %s' % len(baselinks)
         print ' found dynlinks: %s' % len(dynlinks)
+        print ' found get-parameter: %s' % len(getParameter)
+        print ' found get-keys: %s' % len(getKeys)
+        print ' found get-values: %s' % len(getValues)
         print '==========================================='
         exit()
     url = urlparse.urlparse(crawling)
@@ -98,7 +118,7 @@ while True:
                 link = 'http://' + url[1] + link
             elif link.startswith('#'):
                 link = 'http://' + url[1] + url[2] + link
-            elif not link.startswith('http') and '://' in link:
+            elif not link.startswith('http') and ':' in link:
                 #print 'found an malicous link: ' + link
                 blacklist.add(link)
             elif not link.startswith('http'):
@@ -114,3 +134,16 @@ while True:
                     # no ? in link
                     continue
                 tocrawl.add(link)
+    for dynlink in dynlinks:
+        parameters = dynlink.split('&')
+        for parameter in parameters:
+            try:
+                key = parameter.split('=')[0]
+                value = parameter.split('=')[1]
+                getParameter.add(parameter)
+                getKeys.add(key)
+                getValues.add(value)
+                #2do: store values in relation to the key like getKeys[key].add(value)
+            except:
+                print 'error while splitting key. parameter="%s" key="%s"' % (parameter, parameter.split('=')[0])
+
