@@ -26,6 +26,7 @@
 # https://github.com/Gammelbob/jaaPEN
 #
 # Changelog:
+# 0.0.8 - added COOKIE detection
 # 0.0.7 - added POST detection
 # 0.0.6 - better performance by reducing sql-queries and rewritten linkhandling
 # 0.0.5 - added project table to store data for more than one site
@@ -54,12 +55,14 @@ try:
 except ImportError:
     import sqlite3 as sqlite
 
-version = '0.0.7'
+version = '0.0.8'
 showResults = False
 saveResults = False
 
 filterExternal = True
 scanForms = True
+scanCookies = True
+ignoreSessionID = True
 projectID = 1
 dbfile = ':memory:'
 #dbfile = '/tmp/jaaPEN'
@@ -68,7 +71,10 @@ try:
     if sys.argv[1] == 'version' or sys.argv[1] == '-version' or sys.argv[1] == '--version':
         print 'jaaPEN version %s' % version
         exit()
-    tocrawl = set([sys.argv[1]])
+    firstCrawl = sys.argv[1]
+    if not firstCrawl.endswith('/'):
+        firstCrawl = '%s/' % firstCrawl
+    tocrawl = set([firstCrawl])
 except:
     print 'Usage: jaaPEN url [show|save] [file]'
     print '# Example 1: jaaPEN http://localhost'
@@ -109,6 +115,7 @@ storage = dict()
 
 linkregex = re.compile('<a\s*href=[\'|"](.*?)[\'"].*?>')
 if scanForms:
+    #2do: i guess there is no need for * as ? covers all but nothing
     formRegex = re.compile('<form.*?</form>',re.DOTALL)
     formActionRegex = re.compile('action=[\'|"](.*?)[\'|"]')
     formMethodRegex = re.compile('method=[\'|"](.*?)[\'|"]')
@@ -116,9 +123,12 @@ if scanForms:
     inputNameRegex = re.compile('name=[\'|"](.*?)[\'"]')
     inputValueRegex = re.compile('value=[\'|"](.*?)[\'"]')
 
+if scanCookies:
+    cookieRegex = re.compile('Set-Cookie: (.*?);')
+
 try:
     print '# loading previous results from db'
-    # refresh our local vars [baselink][..doh. type is missing..][key][value]['myID']
+    # refresh our local vars [baselink][type][key][value]['myID']
     for baselinkRow in cursor.execute("SELECT baseID, baselink FROM `baselinks` WHERE projectID = %i" % projectID).fetchall():
         storage[baselinkRow[1]] = dict()
         storage[baselinkRow[1]]['myID'] = baselinkRow[0]
@@ -144,13 +154,15 @@ while True:
     except KeyError:
         # job done, presenting the results
         jobtime = time.time() - jobtime
-        pagesPerSec = len(crawled) / jobtime
+        pagesPerSec = float(len(crawled) / jobtime)
         jobtime = int(jobtime)
-        cntBaseLinks = cursor.execute('SELECT count(baseID) FROM baselinks WHERE projectID = %i' % projectID).fetchone()[0]
-        cntGetKeys = cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('GET',projectID)).fetchone()[0]
-        cntGetValues = cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('GET',projectID)).fetchone()[0]
-        cntPostKeys = cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('POST',projectID)).fetchone()[0]
-        cntPostValues = cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('POST',projectID)).fetchone()[0]
+        cntBaseLinks = int(cursor.execute('SELECT count(baseID) FROM baselinks WHERE projectID = %i' % projectID).fetchone()[0])
+        cntGetKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('GET',projectID)).fetchone()[0])
+        cntGetValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('GET',projectID)).fetchone()[0])
+        cntPostKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('POST',projectID)).fetchone()[0])
+        cntPostValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('POST',projectID)).fetchone()[0])
+        cntCookieKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('COOKIE',projectID)).fetchone()[0])
+        cntCookieValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('COOKIE',projectID)).fetchone()[0])
         if showResults:
             for baselinkRow in cursor.execute("SELECT baseID, baselink FROM `baselinks` WHERE projectID = %i" % projectID).fetchall():
                 print '%s' % baselinkRow[1]
@@ -163,13 +175,15 @@ while True:
         print '######'
         print '#  crawled pages\t%i in ~%s seconds' % (len(crawled),jobtime)
         print '#  which means\t\t%f pages/s' % pagesPerSec
-        print '#  blacklisted links\t%i' % (len(blacklist) - len(external))
+        print '#  blacklisted links\t%i' % int(len(blacklist) - len(external))
         print '#  external links\t%i' % len(external)
         print '#  found baselinks\t%i' % cntBaseLinks
         print '#  found get-keys\t%i' % cntGetKeys
         print '#  found get-values\t%i' % cntGetValues
         print '#  found post-keys\t%i' % cntPostKeys
         print '#  found post-values\t%i' % cntPostValues
+        print '#  found cookie-keys\t%i' % cntCookieKeys
+        print '#  found cookie-values\t%i' % cntCookieValues
         print '######'
         # commit our changes which is only needed at a physical file, not at an in-memory database.
         connection.commit()
@@ -177,7 +191,7 @@ while True:
         exit()
 
     #2do: switch to threads with blocking sockets (could be a problem with sqlite because of missing multiconnections) or:
-    #2do: switch to multiple non blocking sockets (which would cause the same problem). should be solved by 0.0.6 (reduced SELECTs).
+    #2do: switch to non blocking sockets (which would cause the same problem). should be solved by 0.0.6 (reduced SELECTs).
     url = urlparse.urlparse(crawling)
     try:
         response = urllib2.urlopen(crawling)
@@ -240,6 +254,7 @@ while True:
             if '=' in parameter:
                 key = parameter.split('=')[0]
                 value = parameter.split('=')[1]
+                # do we have an GET dict for current baselink
                 try:
                     tmp = storage[baselink]['GET']
                 except KeyError:
@@ -265,73 +280,117 @@ while True:
         #connection.commit()
         tocrawl.add(link)
 
-    if not scanForms:
-        continue
-    # get forms
-    forms = formRegex.findall(msg)
-    for form in (forms.pop(0) for _ in xrange(len(forms))):
-        formAction = formActionRegex.findall(form)[0]
-        formMethod = formMethodRegex.findall(form)[0].upper()
-        # lets do some path fixing and blacklisting
-        if not formAction.startswith('http'):
-            if formAction.startswith('/'):
-                formAction = 'http://' + url[1] + formAction
-            elif formAction.startswith('#'):
-                formAction = 'http://' + url[1] + url[2] + formAction
-            elif ':' in formAction:
-                print '# found a weird formAction: ' + formAction
-                print '# nevertheless, we turn on'
-                #blacklist.add(formAction)
-                #continue
-            else:
-                formAction = 'http://' + url[1] + '/' + formAction
-        if not formAction.startswith(sys.argv[1]):
-            if filterExternal:
-                print '# found an external form target: ' + formAction
-                print '# breaking up here!'
-                blacklist.add(formAction)
-                external.add(formAction)
+    if scanForms:
+        forms = formRegex.findall(msg)
+        for form in (forms.pop(0) for _ in xrange(len(forms))):
+            formAction = formActionRegex.findall(form)[0]
+            formMethod = formMethodRegex.findall(form)[0].upper()
+            # lets do some path fixing and blacklisting
+            if not formAction.startswith('http'):
+                if formAction.startswith('/'):
+                    formAction = 'http://' + url[1] + formAction
+                elif formAction.startswith('#'):
+                    formAction = 'http://' + url[1] + url[2] + formAction
+                elif ':' in formAction:
+                    print '# found a weird formAction: ' + formAction
+                    print '# nevertheless, we turn on'
+                    #blacklist.add(formAction)
+                    #continue
+                else:
+                    formAction = 'http://' + url[1] + '/' + formAction
+            if not formAction.startswith(sys.argv[1]):
+                if filterExternal:
+                    print '# found an external form target: ' + formAction
+                    print '# breaking up here!'
+                    blacklist.add(formAction)
+                    external.add(formAction)
+                    continue
+            if formAction in blacklist:
                 continue
-        if formAction in blacklist:
-            continue
-        if formAction not in crawled and formAction not in tocrawl:
-            # lets have a look what do we get if we request the forms target without any parameters
-            tocrawl.add(formAction)
-        # lets check if we already know the forms target/baselink
-        try:
-            tmp = storage[formAction]['myID']
-        except KeyError:
-            cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (projectID,formAction))
-            storage[formAction] = dict()
-            storage[formAction]['myID'] = cursor.lastrowid
-        # do we have an [POST/GET/WHATEVER] array for current form target
-        try:
-            tmp = storage[formAction][formMethod]
-        except KeyError:
-            storage[formAction][formMethod] = dict()
-        # finally get parameters
-        inputs = inputRegex.findall(form)
-        for inputelement in (inputs.pop(0) for _ in xrange(len(inputs))):
+            if formAction not in crawled and formAction not in tocrawl:
+                # lets have a look what do we get if we request the forms target without any parameters
+                tocrawl.add(formAction)
+            # lets check if we already know the forms target/baselink
             try:
-                inputName = inputNameRegex.findall(inputelement)[0]
-            except IndexError:
-                inputName = 'not/set' 
-            try:
-                inputValue = inputValueRegex.findall(inputelement)[0]
-            except IndexError:
-                inputValue = 'not/set'
-            # lets check if we know the key in relation to our formAction/baselink
-            try:
-                tmp = storage[formAction][formMethod][inputName]['myID']
+                tmp = storage[formAction]['myID']
             except KeyError:
-                cursor.execute("INSERT INTO `keys` VALUES(NULL,%i,'%s','%s')" % (storage[formAction]['myID'],formMethod,inputName))
-                storage[formAction][formMethod][inputName] = dict()
-                storage[formAction][formMethod][inputName]['myID'] = cursor.lastrowid
+                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (projectID,formAction))
+                storage[formAction] = dict()
+                storage[formAction]['myID'] = cursor.lastrowid
+            # do we have an [POST/GET/WHATEVER] dict for current form target
+            try:
+                tmp = storage[formAction][formMethod]
+            except KeyError:
+                storage[formAction][formMethod] = dict()
+            # finally get parameters
+            inputs = inputRegex.findall(form)
+            for inputelement in (inputs.pop(0) for _ in xrange(len(inputs))):
+                try:
+                    inputName = inputNameRegex.findall(inputelement)[0]
+                except IndexError:
+                    inputName = 'not/set' 
+                try:
+                    inputValue = inputValueRegex.findall(inputelement)[0]
+                except IndexError:
+                    inputValue = 'not/set'
+                # lets check if we know the key in relation to our formAction/baselink
+                try:
+                    tmp = storage[formAction][formMethod][inputName]['myID']
+                except KeyError:
+                    cursor.execute("INSERT INTO `keys` VALUES(NULL,%i,'%s','%s')" % (storage[formAction]['myID'],formMethod,inputName))
+                    storage[formAction][formMethod][inputName] = dict()
+                    storage[formAction][formMethod][inputName]['myID'] = cursor.lastrowid
+                # lets check if we know the value in relation to the key
+                try:
+                    tmp = storage[formAction][formMethod][inputName][inputValue]['myID']
+                except KeyError:
+                    cursor.execute("INSERT INTO `valuaes` VALUES (NULL,%i,'%s')" % (storage[formAction][formMethod][inputName]['myID'],inputValue))
+                    storage[formAction][formMethod][inputName][inputValue] = dict()
+                    storage[formAction][formMethod][inputName][inputValue]['myID'] = cursor.lastrowid
+
+    if scanCookies:
+        # response.info() return the header
+        header = str(response.info())
+        cookies = cookieRegex.findall(header)
+        try:
+            baselink = response.geturl().split('?')[0]
+        except IndexError:
+            baselink = response.geturl()
+
+        for cookie in (cookies.pop(0) for _ in xrange(len(cookies))):
+            try:
+                key = cookie.split('=')[0]
+                if ignoreSessionID and key == 'PHPSESSID':
+                    continue
+            except IndexError:
+                key = 'not/set' 
+            try:
+                value = cookie.split('=')[1]
+            except IndexError:
+                value = 'not/set'
+            try:
+                tmp = storage[baselink]['myID']
+            except KeyError:
+                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (projectID,baselink))
+                storage[baselink] = dict()
+                storage[baselink]['myID'] = cursor.lastrowid
+            # do we have an COOKIE dict for current baselink
+            try:
+                tmp = storage[baselink]['COOKIE']
+            except KeyError:
+                storage[baselink]['COOKIE'] = dict()
+            # lets check if we know the key in relation to our baselink
+            try:
+                tmp = storage[baselink]['COOKIE'][key]['myID']
+            except KeyError:
+                cursor.execute("INSERT INTO `keys` VALUES(NULL,%i,'%s','%s')" % (storage[baselink]['myID'],'COOKIE',key))
+                storage[baselink]['COOKIE'][key] = dict()
+                storage[baselink]['COOKIE'][key]['myID'] = cursor.lastrowid
             # lets check if we know the value in relation to the key
             try:
-                tmp = storage[formAction][formMethod][inputName][inputValue]['myID']
+                tmp = storage[baselink]['COOKIE'][key][value]['myID']
             except KeyError:
-                cursor.execute("INSERT INTO `valuaes` VALUES (NULL,%i,'%s')" % (storage[formAction][formMethod][inputName]['myID'],inputValue))
-                storage[formAction][formMethod][inputName][inputValue] = dict()
-                storage[formAction][formMethod][inputName][inputValue]['myID'] = cursor.lastrowid
+                cursor.execute("INSERT INTO `valuaes` VALUES (NULL,%i,'%s')" % (storage[baselink]['COOKIE'][key]['myID'],value))
+                storage[baselink]['COOKIE'][key][value] = dict()
+                storage[baselink]['COOKIE'][key][value]['myID'] = cursor.lastrowid
 
