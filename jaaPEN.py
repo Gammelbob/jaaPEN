@@ -26,6 +26,7 @@
 # https://github.com/Gammelbob/jaaPEN
 #
 # Changelog:
+# 0.1.0 - some small fixes
 # 0.0.9 - added basic var type (integer, boolean, string) evaluating
 # 0.0.8 - added COOKIE detection
 # 0.0.7 - added POST detection
@@ -38,6 +39,10 @@
 #
 #2do: remove all general exceptions
 #2do: db-qry replace % with ?
+#2do: crawl, scanform, scancookies are almost identical. should be merged.
+#2do: castType checks for boolean and integer are almost identical. should be merged.
+#2do: castCheckMinResults > 1|2 will be a problem at boolean casting. add if block.
+#2do: get PHPSESSID value at first crawl and use it for all later requests.
 #more at grep -Hirn "2do:" .
 #issues:
 # - try: tmp = storage[baselink][key][value] except KeyError: is bad and just ugly
@@ -56,31 +61,35 @@ try:
 except ImportError:
     import sqlite3 as sqlite
 
-version = '0.0.9'
-showResults = False
+version = '0.1.0'
+showResults = True
 saveResults = False
 
-projectID = 1               # dont change this unless you know what you are doing
-#bfile = ':memory:'         # use in-memory database. you can not store you results after runtime.
-dbfile = '/tmp/jaaPEN'      # most actions will be in memory but this database is saved after runtime.
+projectID = 1               # for future gui implementation. should be called scanID btw.
+dbfile = ':memory:'         # use in-memory database. database is lost after runtime.
+#dbfile = '/tmp/jaaPEN'     # this database is saved after runtime. performance should equal :memory:
 openURL = True              # enable web requests
 crawl = True                # enable link crawling
 scanForms = True            # enable form scanning
 scanCookies = True          # enable cookie scanning
 ignoreSessionID = True      # ignore PHPSESSID as in most cases you get a different one for each site while crawling.
 castCheck = True            # try to determine value types
-castCheckMinResults = 2     # change to one to castCheck every value
+castCheckMinResults = 1     # castCheck is successful if at least castCheckMinResults could be casted.
+                            # change this to 2 or even more to show only reliable results.
 filterExternal = True       # you should _really_ not disable this setting !
 
 try:
     if sys.argv[1] == 'version' or sys.argv[1] == '-version' or sys.argv[1] == '--version':
         print 'jaaPEN version %s' % version
+        print 'update @ https://github.com/Gammelbob/jaaPEN'
         exit()
     firstCrawl = sys.argv[1]
+
+    #2do: this is way to general and should be removed
     if not firstCrawl.endswith('/'):
         firstCrawl = '%s/' % firstCrawl
     tocrawl = set([firstCrawl])
-except:
+except IndexError:
     print 'Usage: jaaPEN url [show|save] [file]'
     print '# Example 1: jaaPEN http://localhost'
     print '# Example 2: jaaPEN http://localhost show'
@@ -90,20 +99,29 @@ except:
     print "# Example 2 will display the results as a tree."
     print "# Example 3 will display nothing but errors."
     #print "# Example 4 will display nothing but errors. The results will be saved in the given file as a tree."
-    print "# Example 4 will display nothing but errors."
+    print "# Example 4 will result in termination."
     print "# Runtime stats will be displayed on all examples."
     exit()
 
 try:
     if sys.argv[2] == 'show':
-        showResults = True
+        saveResults = False
     elif sys.argv[2] == 'save':
-        print '#\t* results will not be saved. nothing but errors and simple statistics will be displayed.\n#\t* use jaaPEN host > file instead\n#'
+        print '#\n#\t* results will not be saved.\n#\t* nothing but errors and simple statistics will be displayed.\n#\t* use jaaPEN url > file instead\n#'
         showResults = False
-        #2do: if iswritable(sys.argv[3]): set saveResults = True, remove showResults here as it is set to False on init
-except:
-    showResults = True
-
+        try:
+            argFile = sys.argv[3]
+            out_file = open(argFile,"r") #2do: replace r with w or a. add a users choice var.
+            out_file.close()
+            print 'could open "%s" for reading but i am not in the mood to write so much' % argFile #2do: replace reading with writing
+            exit()
+            saveResults = True
+        except IOError:
+            print 'could not open "%s" for reading' % argFile #2do: replace reading with writing
+            exit()
+            saveResults = False
+except IndexError:
+    saveResults = False
 
 connection = sqlite.connect(dbfile)
 cursor = connection.cursor()
@@ -154,8 +172,16 @@ while True:
     try:
         crawling = tocrawl.pop()
         if crawling in blacklist:
-            print "this should really not happen"
+            print 'this should really not happen: "%s" is in blacklist but should be crawled.' % crawling
             continue
+    except KeyboardInterrupt:
+        print '\nI got killed :o'
+        print 'saving database..'
+        connection.commit()
+        print 'closing connection..'
+        connection.close()
+        print 'please report bugs and issues @ https://github.com/Gammelbob/jaaPEN'
+        exit()
     except KeyError:
         jobtime = time.time() - jobtime
         pagesPerSec = float(len(crawled) / jobtime)
@@ -178,6 +204,7 @@ while True:
                         for valueRow in cursor.execute("SELECT value FROM `valuaes` WHERE keyID = %i" % keyRow[0]).fetchall():
                             print '\t\t\t%s' % valueRow[0]
         if castCheck:
+            castCheckOut = dict()
             print '#\n# trying to determine var types'
             for baselink in storage:
                 for varType in storage[baselink]:
@@ -186,6 +213,51 @@ while True:
                     for key in storage[baselink][varType]:
                         if key == 'myID':
                             continue
+                        # check for 1)boolean 2)integer 3)assume string
+                        # castCheck for boolean
+                        castType = 'boolean'
+                        castErrors = 0
+                        castSuccess = 0
+                        castErrorlist = set([])
+                        notSure = False
+                        for value in storage[baselink][varType][key]:
+                            if value == 'myID':
+                                continue
+                            if value == '1' or value == '0':
+                                notSure = True
+                                castSuccess +=1
+                            elif value.upper() == 'TRUE' or value.upper() == 'FALSE':
+                                notSure = False
+                                castSuccess +=1
+                            else:
+                                castErrors +=1
+                                castErrorlist.add(value)
+                        if int(castSuccess + castErrors) < castCheckMinResults:
+                            continue
+                        if castSuccess > 0:
+                            successRate = float(float(castSuccess) / float(castErrors+castSuccess)*100)
+                            if notSure and int(castSuccess + castErrors) == 1:
+                                print '#\t(%s or %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % ('bool', 'int', baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                continue
+                            if castErrors == 0:
+                                # we got a boolean
+                                print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                continue
+                            elif successRate >= float(99.9):
+                                # uhm.. ya, seems we got a boolean
+                                print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                for castErrorValue in castErrorlist:
+                                    print '#\t\t=> could not cast "%s" to %s' % (castErrorValue, castType)
+                                continue
+                            elif successRate >= float(90.0):
+                                # uhm.. ya, could be a boolean
+                                print '#\t(maybe %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                for castErrorValue in castErrorlist:
+                                    print '#\t\t=> could not cast "%s" to %s' % (castErrorValue, castType)
+                                continue
+
+                        # castSuccess is 0 or successRate is above limits:
+                        # no boolean - lets check for int
                         castType = 'integer'
                         castErrors = 0
                         castSuccess = 0
@@ -201,61 +273,29 @@ while True:
                                 castErrorlist.add(value)
                         if int(castSuccess + castErrors) < castCheckMinResults:
                             continue
-                        #2do: just one success is a little low. should be a variable set on top.
                         if castSuccess > 0:
-                            successRate = float(100 - float(castErrors) / float(castSuccess))
+                            #successRate = float(100 - float(castErrors) / float(castSuccess))
+                            successRate = float(float(castSuccess) / float(castErrors+castSuccess)*100)
                             if castErrors == 0:
-                                #print 'hell ya, we got an %s' % castType"
+                                # we got an integer
                                 print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                continue
                             elif successRate >= float(99.9):
-                                #print 'uhm.. ya, seems we got an %s' % castType
+                                # uhm.. ya, seems we got an integer
                                 print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
                                 for castErrorValue in castErrorlist:
-                                    print '#\t\t=>could not cast "%s" to %s' % (castErrorValue, castType)
+                                    print '#\t\t=> could not cast "%s" to %s' % (castErrorValue, castType)
+                                continue
                             elif successRate >= float(90.0):
-                                #print 'uhm.. ya, could be an %s' % castType
+                                # uhm.. ya, could be an integer
                                 print '#\t(maybe %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
                                 for castErrorValue in castErrorlist:
-                                    print '#\t\t=>could not cast "%s" to %s' % (castErrorValue, castType)
-                            else:
-                                #print 'uhm.. this seems not to be an %s' % castType"
-                                print '#\t(no %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
-                        else:
-                            # no int - check for boolean
-                            #2do: set boolean on top: check for 1)boolean 2)integer 3)assume string
-                            castType = 'boolean'
-                            castErrors = 0
-                            castSuccess = 0
-                            castErrorlist = set([])
-                            for value in storage[baselink][varType][key]:
-                                if value == 'myID':
-                                    continue
-                                if value.upper() == 'TRUE' or value.upper() == 'FALSE' or value == 1 or value == 0:
-                                    castSuccess +=1
-                                else:
-                                    castErrors +=1
-                                    castErrorlist.add(value)
-                            if castSuccess > 0:
-                                successRate = float(100 - float(castErrors) / float(castSuccess))
-                                if castErrors == 0:
-                                    print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
-                                elif successRate >= float(99.9):
-                                    #print 'uhm.. ya, seems we got an %s' % castType
-                                    print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
-                                    for castErrorValue in castErrorlist:
-                                        print '#\t\t=>could not cast "%s" to %s' % (castErrorValue, castType)
-                                elif successRate >= float(90.0):
-                                    #print 'uhm.. ya, could be an %s' % castType
-                                    print '#\t(maybe %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
-                                    for castErrorValue in castErrorlist:
-                                        print '#\t\t=>could not cast "%s" to %s' % (castErrorValue, castType)
-                                else:
-                                    # no int - no boolean - should be a string
-                                    print '#\t(%s)\t[%s][%s][%s]' % ('string', baselink, varType, key)
-                                    #print '#\t(no %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
-                            else:
-                                # no int - no boolean - should be a string
-                                print '#\t(%s)\t[%s][%s][%s]' % ('string', baselink, varType, key)
+                                    print '#\t\t=> could not cast "%s" to %s' % (castErrorValue, castType)
+                                continue
+
+                        # castSuccess is 0 or successRate is above limits:
+                        # no boolean - no int - should be a string
+                        print '#\t(%s)\t[%s][%s][%s] checked values for other castTypes: %i' % ('string', baselink, varType, key, int(castSuccess+castErrors))
 
         print '######'
         print '#  crawled pages\t%i in ~%s seconds' % (len(crawled),jobtime)
@@ -275,13 +315,22 @@ while True:
         connection.close()
         exit()
 
+    # lets do the job
     if openURL:
         #2do: switch to threads with blocking sockets (could be a problem with sqlite because of missing multiconnections) or:
         #2do: switch to non blocking sockets (which would cause the same problem). should be solved by 0.0.6 (reduced SELECTs).
         url = urlparse.urlparse(crawling)
         try:
             response = urllib2.urlopen(crawling)
-        except:
+        except KeyboardInterrupt:
+            print '\nI got killed :o'
+            print 'saving database..'
+            connection.commit()
+            print 'closing connection..'
+            connection.close()
+            print 'please report bugs and issues @ https://github.com/Gammelbob/jaaPEN'
+            exit()
+        except: #2do: this needs to be changed to remove except KeyboardInterrupt above
             print '# we got an error while requesting "%s"' % crawling
             blacklist.add(crawling)
             continue
