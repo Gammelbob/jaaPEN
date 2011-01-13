@@ -26,6 +26,7 @@
 # https://github.com/Gammelbob/jaaPEN
 #
 # Changelog:
+# 0.0.9 - added basic var type (integer, boolean, string) evaluating
 # 0.0.8 - added COOKIE detection
 # 0.0.7 - added POST detection
 # 0.0.6 - better performance by reducing sql-queries and rewritten linkhandling
@@ -55,17 +56,21 @@ try:
 except ImportError:
     import sqlite3 as sqlite
 
-version = '0.0.8'
+version = '0.0.9'
 showResults = False
 saveResults = False
 
-filterExternal = True
-scanForms = True
-scanCookies = True
-ignoreSessionID = True
-projectID = 1
-dbfile = ':memory:'
-#dbfile = '/tmp/jaaPEN'
+projectID = 1               # dont change this unless you know what you are doing
+#bfile = ':memory:'         # use in-memory database. you can not store you results after runtime.
+dbfile = '/tmp/jaaPEN'      # most actions will be in memory but this database is saved after runtime.
+openURL = True              # enable web requests
+crawl = True                # enable link crawling
+scanForms = True            # enable form scanning
+scanCookies = True          # enable cookie scanning
+ignoreSessionID = True      # ignore PHPSESSID as in most cases you get a different one for each site while crawling.
+castCheck = True            # try to determine value types
+castCheckMinResults = 2     # change to one to castCheck every value
+filterExternal = True       # you should _really_ not disable this setting !
 
 try:
     if sys.argv[1] == 'version' or sys.argv[1] == '-version' or sys.argv[1] == '--version':
@@ -152,10 +157,10 @@ while True:
             print "this should really not happen"
             continue
     except KeyError:
-        # job done, presenting the results
         jobtime = time.time() - jobtime
         pagesPerSec = float(len(crawled) / jobtime)
         jobtime = int(jobtime)
+        # job done, presenting the results
         cntBaseLinks = int(cursor.execute('SELECT count(baseID) FROM baselinks WHERE projectID = %i' % projectID).fetchone()[0])
         cntGetKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('GET',projectID)).fetchone()[0])
         cntGetValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('GET',projectID)).fetchone()[0])
@@ -172,6 +177,86 @@ while True:
                         print '\t\t%s' % keyRow[1]
                         for valueRow in cursor.execute("SELECT value FROM `valuaes` WHERE keyID = %i" % keyRow[0]).fetchall():
                             print '\t\t\t%s' % valueRow[0]
+        if castCheck:
+            print '#\n# trying to determine var types'
+            for baselink in storage:
+                for varType in storage[baselink]:
+                    if varType == 'myID':
+                        continue
+                    for key in storage[baselink][varType]:
+                        if key == 'myID':
+                            continue
+                        castType = 'integer'
+                        castErrors = 0
+                        castSuccess = 0
+                        castErrorlist = set([])
+                        for value in storage[baselink][varType][key]:
+                            if value == 'myID':
+                                continue
+                            try:
+                                tmp = int(value)
+                                castSuccess +=1
+                            except ValueError:
+                                castErrors +=1
+                                castErrorlist.add(value)
+                        if int(castSuccess + castErrors) < castCheckMinResults:
+                            continue
+                        #2do: just one success is a little low. should be a variable set on top.
+                        if castSuccess > 0:
+                            successRate = float(100 - float(castErrors) / float(castSuccess))
+                            if castErrors == 0:
+                                #print 'hell ya, we got an %s' % castType"
+                                print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                            elif successRate >= float(99.9):
+                                #print 'uhm.. ya, seems we got an %s' % castType
+                                print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                for castErrorValue in castErrorlist:
+                                    print '#\t\t=>could not cast "%s" to %s' % (castErrorValue, castType)
+                            elif successRate >= float(90.0):
+                                #print 'uhm.. ya, could be an %s' % castType
+                                print '#\t(maybe %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                for castErrorValue in castErrorlist:
+                                    print '#\t\t=>could not cast "%s" to %s' % (castErrorValue, castType)
+                            else:
+                                #print 'uhm.. this seems not to be an %s' % castType"
+                                print '#\t(no %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                        else:
+                            # no int - check for boolean
+                            #2do: set boolean on top: check for 1)boolean 2)integer 3)assume string
+                            castType = 'boolean'
+                            castErrors = 0
+                            castSuccess = 0
+                            castErrorlist = set([])
+                            for value in storage[baselink][varType][key]:
+                                if value == 'myID':
+                                    continue
+                                if value.upper() == 'TRUE' or value.upper() == 'FALSE' or value == 1 or value == 0:
+                                    castSuccess +=1
+                                else:
+                                    castErrors +=1
+                                    castErrorlist.add(value)
+                            if castSuccess > 0:
+                                successRate = float(100 - float(castErrors) / float(castSuccess))
+                                if castErrors == 0:
+                                    print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                elif successRate >= float(99.9):
+                                    #print 'uhm.. ya, seems we got an %s' % castType
+                                    print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                    for castErrorValue in castErrorlist:
+                                        print '#\t\t=>could not cast "%s" to %s' % (castErrorValue, castType)
+                                elif successRate >= float(90.0):
+                                    #print 'uhm.. ya, could be an %s' % castType
+                                    print '#\t(maybe %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                    for castErrorValue in castErrorlist:
+                                        print '#\t\t=>could not cast "%s" to %s' % (castErrorValue, castType)
+                                else:
+                                    # no int - no boolean - should be a string
+                                    print '#\t(%s)\t[%s][%s][%s]' % ('string', baselink, varType, key)
+                                    #print '#\t(no %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                            else:
+                                # no int - no boolean - should be a string
+                                print '#\t(%s)\t[%s][%s][%s]' % ('string', baselink, varType, key)
+
         print '######'
         print '#  crawled pages\t%i in ~%s seconds' % (len(crawled),jobtime)
         print '#  which means\t\t%f pages/s' % pagesPerSec
@@ -190,95 +275,97 @@ while True:
         connection.close()
         exit()
 
-    #2do: switch to threads with blocking sockets (could be a problem with sqlite because of missing multiconnections) or:
-    #2do: switch to non blocking sockets (which would cause the same problem). should be solved by 0.0.6 (reduced SELECTs).
-    url = urlparse.urlparse(crawling)
-    try:
-        response = urllib2.urlopen(crawling)
-    except:
-        print '# we got an error while requesting "%s"' % crawling
-        blacklist.add(crawling)
-        continue
-    msg = response.read()
-    links = linkregex.findall(msg)
-    crawled.add(crawling)
-
-    for link in (links.pop(0) for _ in xrange(len(links))):
-        if link in crawled or link in blacklist:
+    if openURL:
+        #2do: switch to threads with blocking sockets (could be a problem with sqlite because of missing multiconnections) or:
+        #2do: switch to non blocking sockets (which would cause the same problem). should be solved by 0.0.6 (reduced SELECTs).
+        url = urlparse.urlparse(crawling)
+        try:
+            response = urllib2.urlopen(crawling)
+        except:
+            print '# we got an error while requesting "%s"' % crawling
+            blacklist.add(crawling)
             continue
-        # lets do some path fixing and blacklisting
-        if not link.startswith('http'):
-            if link.startswith('/'):
-                link = 'http://' + url[1] + link
-            elif link.startswith('#'):
-                link = 'http://' + url[1] + url[2] + link
-            elif ':' in link:
-                print '# found a weird link: ' + link
-                blacklist.add(link)
-                continue
-            else:
-                link = 'http://' + url[1] + '/' + link
-            # recheck due linkfixing
+        msg = response.read()
+
+    if crawl:
+        links = linkregex.findall(msg)
+        crawled.add(crawling)
+        for link in (links.pop(0) for _ in xrange(len(links))):
             if link in crawled or link in blacklist:
                 continue
-        if not link.startswith(sys.argv[1]):
-            if filterExternal:
-                print '# found an external link: ' + link
-                blacklist.add(link)
-                external.add(link)
-                continue
-        # we finally found a new link to crawl, lets get the attributes
-        # baselink
-        if '?' in link:
-            baselink = link.split('?')[0]
-            dynlink = link.split('?')[1]
-        else:
-            baselink = link
-            dynlink = ''
-
-        # lets check if we already know this baselink
-        try:
-            tmp = storage[baselink]['myID']
-        except KeyError:
-            cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (projectID,baselink))
-            storage[baselink] = dict()
-            storage[baselink]['myID'] = cursor.lastrowid
-            #print "\tnew baselink"
-        # get our GET parameter
-        if '&' in dynlink or '=' in dynlink:
-            parameters = dynlink.split('&')
-        else:
-            # we got an empty or weird dynlink
-            parameters = dynlink
-        for parameter in parameters:
-            if '=' in parameter:
-                key = parameter.split('=')[0]
-                value = parameter.split('=')[1]
-                # do we have an GET dict for current baselink
-                try:
-                    tmp = storage[baselink]['GET']
-                except KeyError:
-                    storage[baselink]['GET'] = dict()
-                # lets check if we already know this key in relation to our baselink
-                try:
-                    tmp = storage[baselink]['GET'][key]['myID']
-                except KeyError:
-                    cursor.execute("INSERT INTO `keys` VALUES(NULL,%i,'%s','%s')" % (storage[baselink]['myID'],'GET',key))
-                    storage[baselink]['GET'][key] = dict()
-                    storage[baselink]['GET'][key]['myID'] = cursor.lastrowid
-                    #print "\t\tnew key"
-                # lets check if we already know this value in relation to our key
-                try:
-                    tmp = storage[baselink]['GET'][key][value]['myID']
-                except KeyError:
-                    cursor.execute("INSERT INTO `valuaes` VALUES (NULL,%i,'%s')" % (storage[baselink]['GET'][key]['myID'],value))
-                    storage[baselink]['GET'][key][value] = dict()
-                    storage[baselink]['GET'][key][value]['myID'] = cursor.lastrowid
-                    #print "\t\t\tnew value"
+            # lets do some path fixing and blacklisting
+            if not link.startswith('http'):
+                if link.startswith('/'):
+                    link = 'http://' + url[1] + link
+                elif link.startswith('#'):
+                    link = 'http://' + url[1] + url[2] + link
+                elif ':' in link:
+                    print '# found a weird link: ' + link
+                    blacklist.add(link)
+                    continue
+                else:
+                    link = 'http://' + url[1] + '/' + link
+                # recheck due linkfixing
+                if link in crawled or link in blacklist:
+                    continue
+            if not link.startswith(sys.argv[1]):
+                if filterExternal:
+                    print '# found an external link: ' + link
+                    blacklist.add(link)
+                    external.add(link)
+                    continue
+            # we finally found a new link to crawl, lets get the attributes
+            # baselink
+            if '?' in link:
+                baselink = link.split('?')[0]
+                dynlink = link.split('?')[1]
             else:
-                print '# found a weird parameter: %s' % parameter
-        #connection.commit()
-        tocrawl.add(link)
+                baselink = link
+                dynlink = ''
+
+            # lets check if we already know this baselink
+            try:
+                tmp = storage[baselink]['myID']
+            except KeyError:
+                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (projectID,baselink))
+                storage[baselink] = dict()
+                storage[baselink]['myID'] = cursor.lastrowid
+                #print "\tnew baselink"
+            # get our GET parameter
+            if '&' in dynlink or '=' in dynlink:
+                parameters = dynlink.split('&')
+            else:
+                # we got an empty or weird dynlink
+                parameters = dynlink
+            for parameter in parameters:
+                if '=' in parameter:
+                    key = parameter.split('=')[0]
+                    value = parameter.split('=')[1]
+                    # do we have an GET dict for current baselink
+                    try:
+                        tmp = storage[baselink]['GET']
+                    except KeyError:
+                        storage[baselink]['GET'] = dict()
+                    # lets check if we already know this key in relation to our baselink
+                    try:
+                        tmp = storage[baselink]['GET'][key]['myID']
+                    except KeyError:
+                        cursor.execute("INSERT INTO `keys` VALUES(NULL,%i,'%s','%s')" % (storage[baselink]['myID'],'GET',key))
+                        storage[baselink]['GET'][key] = dict()
+                        storage[baselink]['GET'][key]['myID'] = cursor.lastrowid
+                        #print "\t\tnew key"
+                    # lets check if we already know this value in relation to our key
+                    try:
+                        tmp = storage[baselink]['GET'][key][value]['myID']
+                    except KeyError:
+                        cursor.execute("INSERT INTO `valuaes` VALUES (NULL,%i,'%s')" % (storage[baselink]['GET'][key]['myID'],value))
+                        storage[baselink]['GET'][key][value] = dict()
+                        storage[baselink]['GET'][key][value]['myID'] = cursor.lastrowid
+                        #print "\t\t\tnew value"
+                else:
+                    print '# found a weird parameter: %s' % parameter
+            #connection.commit()
+            tocrawl.add(link)
 
     if scanForms:
         forms = formRegex.findall(msg)
@@ -349,7 +436,7 @@ while True:
                     storage[formAction][formMethod][inputName][inputValue]['myID'] = cursor.lastrowid
 
     if scanCookies:
-        # response.info() return the header
+        # response.info() returns the header
         header = str(response.info())
         cookies = cookieRegex.findall(header)
         try:
