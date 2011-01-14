@@ -26,6 +26,7 @@
 # https://github.com/Gammelbob/jaaPEN
 #
 # Changelog:
+# 0.1.1 - rewritten var type evaluating
 # 0.1.0 - some small fixes
 # 0.0.9 - added basic var type (integer, boolean, string) evaluating
 # 0.0.8 - added COOKIE detection
@@ -43,6 +44,7 @@
 #2do: castType checks for boolean and integer are almost identical. should be merged.
 #2do: castCheckMinResults > 1|2 will be a problem at boolean casting. add if block.
 #2do: get PHPSESSID value at first crawl and use it for all later requests.
+#2do: merge all those sql stuff in var type evaluation
 #more at grep -Hirn "2do:" .
 #issues:
 # - try: tmp = storage[baselink][key][value] except KeyError: is bad and just ugly
@@ -61,11 +63,11 @@ try:
 except ImportError:
     import sqlite3 as sqlite
 
-version = '0.1.0'
+version = '0.1.1'
 showResults = True
 saveResults = False
 
-projectID = 1               # for future gui implementation. should be called scanID btw.
+scanID = 1                  # for future gui implementation. could be a base for scan diffs
 dbfile = ':memory:'         # use in-memory database. database is lost after runtime.
 #dbfile = '/tmp/jaaPEN'     # this database is saved after runtime. performance should equal :memory:
 openURL = True              # enable web requests
@@ -125,11 +127,15 @@ except IndexError:
 
 connection = sqlite.connect(dbfile)
 cursor = connection.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS `projects` (projectID INTEGER PRIMARY KEY AUTOINCREMENT, description VARCHAR(255))")
-cursor.execute("CREATE TABLE IF NOT EXISTS `baselinks` (baseID INTEGER PRIMARY KEY AUTOINCREMENT, projectID INTEGER, baselink VARCHAR(255))")
+cursor.execute("CREATE TABLE IF NOT EXISTS `castTypes` (castTypeID INTEGER PRIMARY KEY AUTOINCREMENT, castTypeValue VARCHAR(255))")
+cursor.execute("CREATE TABLE IF NOT EXISTS `scans` (scanID INTEGER PRIMARY KEY AUTOINCREMENT, description VARCHAR(255))")
+cursor.execute("CREATE TABLE IF NOT EXISTS `baselinks` (baseID INTEGER PRIMARY KEY AUTOINCREMENT, scanID INTEGER, baselink VARCHAR(255))")
 cursor.execute("CREATE TABLE IF NOT EXISTS `keys` (keyID INTEGER PRIMARY KEY AUTOINCREMENT, baseID INTEGER, type VARCHAR(20), key VARCHAR(255))")
+cursor.execute("CREATE TABLE IF NOT EXISTS `keyCastResults` (keyID INTEGER PRIMARY KEY, castTypeID INTEGER, castSuccess INTEGER, castErrors INTEGER)")
+cursor.execute("CREATE TABLE IF NOT EXISTS `castErrors` (castErrorID INTEGER PRIMARY KEY AUTOINCREMENT, keyID INTEGER, castTypeID INTEGER, castErrorValue VARCHAR(255))")
 cursor.execute("CREATE TABLE IF NOT EXISTS `valuaes` (valueID INTEGER PRIMARY KEY AUTOINCREMENT, keyID INTEGER, value VARCHAR(255))")
 # valuaes is not a typo. you cant have something like values as a table name in sqlite. 2 hours gone to realise it :o
+#2do: castErrors should be keyCastErrors
 
 crawled = set([])
 blacklist = set([])
@@ -152,7 +158,7 @@ if scanCookies:
 try:
     print '# loading previous results from db'
     # refresh our local vars [baselink][type][key][value]['myID']
-    for baselinkRow in cursor.execute("SELECT baseID, baselink FROM `baselinks` WHERE projectID = %i" % projectID).fetchall():
+    for baselinkRow in cursor.execute("SELECT baseID, baselink FROM `baselinks` WHERE scanID = %i" % scanID).fetchall():
         storage[baselinkRow[1]] = dict()
         storage[baselinkRow[1]]['myID'] = baselinkRow[0]
         for typeRow in cursor.execute("SELECT type FROM `keys` WHERE baseID = %i GROUP BY `keys`.type" % baselinkRow[0]).fetchall():
@@ -166,7 +172,7 @@ try:
 except:
     print '# loading previous results from DB failed. guessing new table or in-memory DB'
 
-print '# started crawling for projectID %i' % projectID
+print '# started crawling for scanID %i' % scanID
 jobtime = time.time()
 while True:
     try:
@@ -187,15 +193,15 @@ while True:
         pagesPerSec = float(len(crawled) / jobtime)
         jobtime = int(jobtime)
         # job done, presenting the results
-        cntBaseLinks = int(cursor.execute('SELECT count(baseID) FROM baselinks WHERE projectID = %i' % projectID).fetchone()[0])
-        cntGetKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('GET',projectID)).fetchone()[0])
-        cntGetValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('GET',projectID)).fetchone()[0])
-        cntPostKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('POST',projectID)).fetchone()[0])
-        cntPostValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('POST',projectID)).fetchone()[0])
-        cntCookieKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i)' % ('COOKIE',projectID)).fetchone()[0])
-        cntCookieValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE projectID = %i))' % ('COOKIE',projectID)).fetchone()[0])
+        cntBaseLinks = int(cursor.execute('SELECT count(baseID) FROM baselinks WHERE scanID = %i' % scanID).fetchone()[0])
+        cntGetKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE scanID = %i)' % ('GET',scanID)).fetchone()[0])
+        cntGetValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE scanID = %i))' % ('GET',scanID)).fetchone()[0])
+        cntPostKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE scanID = %i)' % ('POST',scanID)).fetchone()[0])
+        cntPostValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE scanID = %i))' % ('POST',scanID)).fetchone()[0])
+        cntCookieKeys = int(cursor.execute('SELECT count(keyID) FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE scanID = %i)' % ('COOKIE',scanID)).fetchone()[0])
+        cntCookieValues = int(cursor.execute('SELECT count(valueID) FROM valuaes WHERE keyID IN (SELECT keyID FROM keys WHERE type = \'%s\' AND baseID IN (SELECT baseID FROM baselinks WHERE scanID = %i))' % ('COOKIE',scanID)).fetchone()[0])
         if showResults:
-            for baselinkRow in cursor.execute("SELECT baseID, baselink FROM `baselinks` WHERE projectID = %i" % projectID).fetchall():
+            for baselinkRow in cursor.execute("SELECT baseID, baselink FROM `baselinks` WHERE scanID = %i" % scanID).fetchall():
                 print '%s' % baselinkRow[1]
                 for typeRow in cursor.execute("SELECT type FROM `keys` WHERE baseID = %i GROUP BY `keys`.type" % baselinkRow[0]).fetchall():
                     print '\t%s' % typeRow[0]
@@ -206,6 +212,9 @@ while True:
         if castCheck:
             castCheckOut = dict()
             print '#\n# trying to determine var types'
+            print '# deleting old keyCast results'
+            cursor.execute("DELETE FROM `keyCastResults`")
+            cursor.execute("DELETE FROM `castErrors`")
             for baselink in storage:
                 for varType in storage[baselink]:
                     if varType == 'myID':
@@ -235,27 +244,47 @@ while True:
                         if int(castSuccess + castErrors) < castCheckMinResults:
                             continue
                         if castSuccess > 0:
+                            keyID = storage[baselink][varType][key]['myID']
                             successRate = float(float(castSuccess) / float(castErrors+castSuccess)*100)
                             if notSure and int(castSuccess + castErrors) == 1:
-                                print '#\t(%s or %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % ('bool', 'int', baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                castType = 'bool or int'
+                                try: castTypeID = cursor.execute("SELECT castTypeID FROM castTypes WHERE castTypeValue = '%s'" % castType).fetchone()[0]
+                                except TypeError:
+                                    cursor.execute("INSERT INTO castTypes VALUES (NULL,'%s')" % castType)
+                                    castTypeID = cursor.lastrowid
+                                cursor.execute("INSERT INTO keyCastResults VALUES (%i,%i,%i,%i)" % (keyID, castTypeID, castSuccess, castErrors))
                                 continue
                             if castErrors == 0:
                                 # we got a boolean
-                                print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                castType = 'boolean'
+                                try: castTypeID = cursor.execute("SELECT castTypeID FROM castTypes WHERE castTypeValue = '%s'" % castType).fetchone()[0]
+                                except TypeError:
+                                    cursor.execute("INSERT INTO castTypes VALUES (NULL,'%s')" % castType)
+                                    castTypeID = cursor.lastrowid
+                                cursor.execute("INSERT INTO keyCastResults VALUES (%i,%i,%i,%i)" % (keyID, castTypeID, castSuccess, castErrors))
                                 continue
                             elif successRate >= float(99.9):
                                 # uhm.. ya, seems we got a boolean
-                                print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                castType = 'boolean'
+                                try: castTypeID = cursor.execute("SELECT castTypeID FROM castTypes WHERE castTypeValue = '%s'" % castType).fetchone()[0]
+                                except TypeError:
+                                    cursor.execute("INSERT INTO castTypes VALUES (NULL,'%s')" % castType)
+                                    castTypeID = cursor.lastrowid
+                                cursor.execute("INSERT INTO keyCastResults VALUES (%i,%i,%i,%i)" % (keyID, castTypeID, castSuccess, castErrors))
                                 for castErrorValue in castErrorlist:
-                                    print '#\t\t=> could not cast "%s" to %s' % (castErrorValue, castType)
+                                    cursor.execute("INSERT INTO castErrors VALUES (NULL,%i,%i,'%s')" % (keyID, castTypeID, castErrorValue))
                                 continue
                             elif successRate >= float(90.0):
                                 # uhm.. ya, could be a boolean
-                                print '#\t(maybe %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                castType = 'bool or int'
+                                try: castTypeID = cursor.execute("SELECT castTypeID FROM castTypes WHERE castTypeValue = '%s'" % castType).fetchone()[0]
+                                except TypeError:
+                                    cursor.execute("INSERT INTO castTypes VALUES (NULL,'%s')" % castType)
+                                    castTypeID = cursor.lastrowid
+                                cursor.execute("INSERT INTO keyCastResults VALUES (%i,%i,%i,%i)" % (keyID, castTypeID, castSuccess, castErrors))
                                 for castErrorValue in castErrorlist:
-                                    print '#\t\t=> could not cast "%s" to %s' % (castErrorValue, castType)
+                                    cursor.execute("INSERT INTO castErrors VALUES (NULL,%i,%i,'%s')" % (keyID, castTypeID, castErrorValue))
                                 continue
-
                         # castSuccess is 0 or successRate is above limits:
                         # no boolean - lets check for int
                         castType = 'integer'
@@ -271,31 +300,72 @@ while True:
                             except ValueError:
                                 castErrors +=1
                                 castErrorlist.add(value)
-                        if int(castSuccess + castErrors) < castCheckMinResults:
-                            continue
                         if castSuccess > 0:
-                            #successRate = float(100 - float(castErrors) / float(castSuccess))
+                            keyID = storage[baselink][varType][key]['myID']
                             successRate = float(float(castSuccess) / float(castErrors+castSuccess)*100)
                             if castErrors == 0:
                                 # we got an integer
-                                print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                castType = 'integer'
+                                try: castTypeID = cursor.execute("SELECT castTypeID FROM castTypes WHERE castTypeValue = '%s'" % castType).fetchone()[0]
+                                except TypeError:
+                                    cursor.execute("INSERT INTO castTypes VALUES (NULL,'%s')" % castType)
+                                    castTypeID = cursor.lastrowid
+                                cursor.execute("INSERT INTO keyCastResults VALUES (%i,%i,%i,%i)" % (keyID, castTypeID, castSuccess, castErrors))
                                 continue
                             elif successRate >= float(99.9):
                                 # uhm.. ya, seems we got an integer
-                                print '#\t(%s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                castType = 'integer'
+                                try: castTypeID = cursor.execute("SELECT castTypeID FROM castTypes WHERE castTypeValue = '%s'" % castType).fetchone()[0]
+                                except TypeError:
+                                    cursor.execute("INSERT INTO castTypes VALUES (NULL,'%s')" % castType)
+                                    castTypeID = cursor.lastrowid
+                                cursor.execute("INSERT INTO keyCastResults VALUES (%i,%i,%i,%i)" % (keyID, castTypeID, castSuccess, castErrors))
                                 for castErrorValue in castErrorlist:
-                                    print '#\t\t=> could not cast "%s" to %s' % (castErrorValue, castType)
+                                    cursor.execute("INSERT INTO castErrors VALUES (NULL,%i,%i,'%s')" % (keyID, castTypeID, castErrorValue))
                                 continue
                             elif successRate >= float(90.0):
                                 # uhm.. ya, could be an integer
-                                print '#\t(maybe %s)\t[%s][%s][%s] castRate for %s: %i/%i (%s)' % (castType, baselink, varType, key, castType, castSuccess, int(castSuccess+castErrors),successRate)
+                                castType = 'could be integer'
+                                try: castTypeID = cursor.execute("SELECT castTypeID FROM castTypes WHERE castTypeValue = '%s'" % castType).fetchone()[0]
+                                except TypeError:
+                                    cursor.execute("INSERT INTO castTypes VALUES (NULL,'%s')" % castType)
+                                    castTypeID = cursor.lastrowid
+                                cursor.execute("INSERT INTO keyCastResults VALUES (%i,%i,%i,%i)" % (keyID, castTypeID, castSuccess, castErrors))
                                 for castErrorValue in castErrorlist:
-                                    print '#\t\t=> could not cast "%s" to %s' % (castErrorValue, castType)
+                                    cursor.execute("INSERT INTO castErrors VALUES (NULL,%i,%i,'%s')" % (keyID, castTypeID, castErrorValue))
                                 continue
 
                         # castSuccess is 0 or successRate is above limits:
                         # no boolean - no int - should be a string
-                        print '#\t(%s)\t[%s][%s][%s] checked values for other castTypes: %i' % ('string', baselink, varType, key, int(castSuccess+castErrors))
+                        castType = 'string'
+                        keyID = storage[baselink][varType][key]['myID']
+                        try: castTypeID = cursor.execute("SELECT castTypeID FROM castTypes WHERE castTypeValue = '%s'" % castType).fetchone()[0]
+                        except TypeError:
+                            cursor.execute("INSERT INTO castTypes VALUES (NULL,'%s')" % castType)
+                            castTypeID = cursor.lastrowid
+                        cursor.execute("INSERT INTO keyCastResults VALUES (%i,%i,%i,%i)" % (keyID, castTypeID, 0, int(castSuccess+castErrors)))
+                        
+            for castTypeRow in cursor.execute("SELECT castTypeID, castTypeValue FROM `castTypes` ORDER BY castTypeValue ASC").fetchall():
+                print '\n%s' % castTypeRow[1]
+                for baselinkRow in cursor.execute("SELECT baseID, baselink FROM `baselinks` WHERE scanID = %i" % scanID).fetchall():
+                    for typeRow in cursor.execute("SELECT type FROM `keys` WHERE baseID = %i GROUP BY `keys`.type" % baselinkRow[0]).fetchall():
+                        for keyRow in cursor.execute("SELECT `keys`.keyID, key, `keyCastResults`.castSuccess, `keyCastResults`.castErrors FROM `keys`, `keyCastResults` WHERE baseID = %i AND type='%s' AND `keyCastResults`.castTypeID = %i AND `keyCastResults`.keyID = `keys`.keyID" % (baselinkRow[0], typeRow[0], castTypeRow[0])).fetchall():
+                            count = int(keyRow[2] + keyRow[3])
+                            if not castTypeRow[1] == 'string':
+                                successCount = int(keyRow[2])
+                                successRate = float(successCount) / float(count) * 100
+                                if int(successRate) < 100:
+                                    filler = ' '
+                                    if int(successRate) < 10: filler = ' %s' % filler
+                                else: filler = ''
+                                if count > 99:
+                                    print '\t%s%.2f%s (%i/%i)\t[%s][%s][%s]' % (filler, successRate, '%', successCount, count, baselinkRow[1], typeRow[0], keyRow[1])
+                                else:
+                                    print '\t%s%.2f%s (%i/%i)\t\t[%s][%s][%s]' % (filler, successRate, '%', successCount, count, baselinkRow[1], typeRow[0], keyRow[1])
+                            else:
+                                print '\tchecked: %i\t\t[%s][%s][%s]' % (count, baselinkRow[1], typeRow[0], keyRow[1])
+                            for castErrorRow in cursor.execute("SELECT castErrorValue FROM `castErrors` WHERE keyID = %i" % keyRow[0]).fetchall():
+                                print '\t\t\t\t=> could not cast "%s" to %s' % (castErrorRow[0], castTypeRow[1]) 
 
         print '######'
         print '#  crawled pages\t%i in ~%s seconds' % (len(crawled),jobtime)
@@ -320,8 +390,7 @@ while True:
         #2do: switch to threads with blocking sockets (could be a problem with sqlite because of missing multiconnections) or:
         #2do: switch to non blocking sockets (which would cause the same problem). should be solved by 0.0.6 (reduced SELECTs).
         url = urlparse.urlparse(crawling)
-        try:
-            response = urllib2.urlopen(crawling)
+        try: response = urllib2.urlopen(crawling)
         except KeyboardInterrupt:
             print '\nI got killed :o'
             print 'saving database..'
@@ -352,8 +421,7 @@ while True:
                     print '# found a weird link: ' + link
                     blacklist.add(link)
                     continue
-                else:
-                    link = 'http://' + url[1] + '/' + link
+                else: link = 'http://' + url[1] + '/' + link
                 # recheck due linkfixing
                 if link in crawled or link in blacklist:
                     continue
@@ -373,10 +441,9 @@ while True:
                 dynlink = ''
 
             # lets check if we already know this baselink
-            try:
-                tmp = storage[baselink]['myID']
+            try: tmp = storage[baselink]['myID']
             except KeyError:
-                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (projectID,baselink))
+                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (scanID,baselink))
                 storage[baselink] = dict()
                 storage[baselink]['myID'] = cursor.lastrowid
                 #print "\tnew baselink"
@@ -391,21 +458,18 @@ while True:
                     key = parameter.split('=')[0]
                     value = parameter.split('=')[1]
                     # do we have an GET dict for current baselink
-                    try:
-                        tmp = storage[baselink]['GET']
+                    try: tmp = storage[baselink]['GET']
                     except KeyError:
                         storage[baselink]['GET'] = dict()
                     # lets check if we already know this key in relation to our baselink
-                    try:
-                        tmp = storage[baselink]['GET'][key]['myID']
+                    try: tmp = storage[baselink]['GET'][key]['myID']
                     except KeyError:
                         cursor.execute("INSERT INTO `keys` VALUES(NULL,%i,'%s','%s')" % (storage[baselink]['myID'],'GET',key))
                         storage[baselink]['GET'][key] = dict()
                         storage[baselink]['GET'][key]['myID'] = cursor.lastrowid
                         #print "\t\tnew key"
                     # lets check if we already know this value in relation to our key
-                    try:
-                        tmp = storage[baselink]['GET'][key][value]['myID']
+                    try: tmp = storage[baselink]['GET'][key][value]['myID']
                     except KeyError:
                         cursor.execute("INSERT INTO `valuaes` VALUES (NULL,%i,'%s')" % (storage[baselink]['GET'][key]['myID'],value))
                         storage[baselink]['GET'][key][value] = dict()
@@ -447,38 +511,32 @@ while True:
                 # lets have a look what do we get if we request the forms target without any parameters
                 tocrawl.add(formAction)
             # lets check if we already know the forms target/baselink
-            try:
-                tmp = storage[formAction]['myID']
+            try: tmp = storage[formAction]['myID']
             except KeyError:
-                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (projectID,formAction))
+                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (scanID,formAction))
                 storage[formAction] = dict()
                 storage[formAction]['myID'] = cursor.lastrowid
             # do we have an [POST/GET/WHATEVER] dict for current form target
-            try:
-                tmp = storage[formAction][formMethod]
+            try: tmp = storage[formAction][formMethod]
             except KeyError:
                 storage[formAction][formMethod] = dict()
             # finally get parameters
             inputs = inputRegex.findall(form)
             for inputelement in (inputs.pop(0) for _ in xrange(len(inputs))):
-                try:
-                    inputName = inputNameRegex.findall(inputelement)[0]
+                try: inputName = inputNameRegex.findall(inputelement)[0]
                 except IndexError:
                     inputName = 'not/set' 
-                try:
-                    inputValue = inputValueRegex.findall(inputelement)[0]
+                try: inputValue = inputValueRegex.findall(inputelement)[0]
                 except IndexError:
                     inputValue = 'not/set'
                 # lets check if we know the key in relation to our formAction/baselink
-                try:
-                    tmp = storage[formAction][formMethod][inputName]['myID']
+                try: tmp = storage[formAction][formMethod][inputName]['myID']
                 except KeyError:
                     cursor.execute("INSERT INTO `keys` VALUES(NULL,%i,'%s','%s')" % (storage[formAction]['myID'],formMethod,inputName))
                     storage[formAction][formMethod][inputName] = dict()
                     storage[formAction][formMethod][inputName]['myID'] = cursor.lastrowid
                 # lets check if we know the value in relation to the key
-                try:
-                    tmp = storage[formAction][formMethod][inputName][inputValue]['myID']
+                try: tmp = storage[formAction][formMethod][inputName][inputValue]['myID']
                 except KeyError:
                     cursor.execute("INSERT INTO `valuaes` VALUES (NULL,%i,'%s')" % (storage[formAction][formMethod][inputName]['myID'],inputValue))
                     storage[formAction][formMethod][inputName][inputValue] = dict()
@@ -488,8 +546,7 @@ while True:
         # response.info() returns the header
         header = str(response.info())
         cookies = cookieRegex.findall(header)
-        try:
-            baselink = response.geturl().split('?')[0]
+        try: baselink = response.geturl().split('?')[0]
         except IndexError:
             baselink = response.geturl()
 
@@ -500,31 +557,26 @@ while True:
                     continue
             except IndexError:
                 key = 'not/set' 
-            try:
-                value = cookie.split('=')[1]
+            try: value = cookie.split('=')[1]
             except IndexError:
                 value = 'not/set'
-            try:
-                tmp = storage[baselink]['myID']
+            try: tmp = storage[baselink]['myID']
             except KeyError:
-                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (projectID,baselink))
+                cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (scanID,baselink))
                 storage[baselink] = dict()
                 storage[baselink]['myID'] = cursor.lastrowid
             # do we have an COOKIE dict for current baselink
-            try:
-                tmp = storage[baselink]['COOKIE']
+            try: tmp = storage[baselink]['COOKIE']
             except KeyError:
                 storage[baselink]['COOKIE'] = dict()
             # lets check if we know the key in relation to our baselink
-            try:
-                tmp = storage[baselink]['COOKIE'][key]['myID']
+            try: tmp = storage[baselink]['COOKIE'][key]['myID']
             except KeyError:
                 cursor.execute("INSERT INTO `keys` VALUES(NULL,%i,'%s','%s')" % (storage[baselink]['myID'],'COOKIE',key))
                 storage[baselink]['COOKIE'][key] = dict()
                 storage[baselink]['COOKIE'][key]['myID'] = cursor.lastrowid
             # lets check if we know the value in relation to the key
-            try:
-                tmp = storage[baselink]['COOKIE'][key][value]['myID']
+            try: tmp = storage[baselink]['COOKIE'][key][value]['myID']
             except KeyError:
                 cursor.execute("INSERT INTO `valuaes` VALUES (NULL,%i,'%s')" % (storage[baselink]['COOKIE'][key]['myID'],value))
                 storage[baselink]['COOKIE'][key][value] = dict()
